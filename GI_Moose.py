@@ -8,6 +8,9 @@ from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 from scipy.interpolate import interp1d
+import folium
+from streamlit_folium import st_folium
+from folium.plugins import HeatMap
 import os
 import math
 
@@ -39,7 +42,7 @@ with col_logo1:
     if os.path.exists("Logo_WPP.png"):
         st.image("Logo_WPP.png", width=130)
     else:
-        st.markdown("**[Logo WPP]**")
+        st.markdown("**[WPP Logo]**")
 
 with col_title:
     st.title("🌐 Growth Index (GI)")
@@ -48,7 +51,7 @@ with col_logo2:
     if os.path.exists("Moose_logo.png"):
         st.image("Moose_logo.png", width=130)
     else:
-        st.markdown("**[Logo Moose]**")
+        st.markdown("**[Moose Logo]**")
 
 MEDIA_PARAMS = {
     'Digital': {'name': 'Digital', 'color': '#0668E1'},
@@ -66,7 +69,7 @@ if 'opt_weeks' not in st.session_state or not all(k in st.session_state.opt_week
     }
 
 st.markdown("---")
-tab1, tab2, tab3 = st.tabs(["📊 Growth Index Builder", "📈 MiA - Medición del Impacto de Medios", "⚡ Budget Allocator"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Growth Index Builder", "📈 MiA - Medición del Impacto de Medios", "⚡ Budget Allocator", "🗺️ Geotargeting"])
 
 with tab1:
     st.markdown("### 📊 Growth Index Builder")
@@ -195,6 +198,8 @@ with tab1:
                 return df, weights_dict, corr_val, r_sq, grouped_contribs
 
             df_model, weights, correlation_r, r2_val, grouped_contribs = fit_growth_index_model(raw_df, model_mode)
+            
+            st.session_state['avg_weekly_sales'] = float(df_model["SalesUnides"].mean())
 
             col_inputs, col_results = st.columns([1.1, 2.5])
 
@@ -319,6 +324,26 @@ with tab1:
                     margin=dict(l=10, r=10, t=40, b=10)
                 )
                 st.plotly_chart(fig_scatter, use_container_width=True)
+
+            # --- SUBSECCIÓN: CONVERSOR INVERSO (GI -> VENTAS INCREMENTALES) ---
+            st.markdown("---")
+            st.subheader("🔄 Conversor Inverso: De Growth Index (GI) a Ventas Incrementales")
+            st.markdown("Utiliza el modelo de calibración lineal ajustado con los datos históricos para estimar las ventas incrementales en unidades a partir de cualquier valor de Growth Index (omitiendo el intercepto en el cálculo).")
+
+            lr_conv = LinearRegression(fit_intercept=True)
+            lr_conv.fit(df_model[['Growth_Index']], df_model['SalesUnides'])
+            slope_conv = lr_conv.coef_[0]
+            intercept_conv = lr_conv.intercept_
+
+            c_conv1, c_conv2 = st.columns([1, 2])
+            with c_conv1:
+                gi_input_val = st.number_input("Valor de Growth Index (GI) a convertir:", min_value=0.0, max_value=2000.0, value=float(sim_gi), step=1.0, key="gi_conv_val_input")
+                pred_sales_val = slope_conv * gi_input_val  # Omitiendo intercepto en la proyección
+                st.metric("Ventas Incrementales", f"{pred_sales_val:,.1f} uds")
+            with c_conv2:
+                st.markdown(f"**Especificación del Modelo (Proyección sin Intercepto):**")
+                st.latex(f"\\text{{Ventas Incrementales}} = {slope_conv:.4f} \\times \\text{{GI}}")
+                st.markdown(f"- **Pendiente ($\beta$):** {slope_conv:.4f} unidades incrementales por cada punto de GI.")
 
         except Exception as e:
             st.error(f"Error al leer el archivo CSV: {e}")
@@ -539,12 +564,13 @@ with tab3:
             c2.plotly_chart(fig_area, use_container_width=True)
 
     with sub_tab2:
-        st.markdown("Sube tu **Plan de Medios en Excel** (`MediaPlan_LLP.xlsx`) y tu **Benchmark de Inversión** (`Benchmark_Budget_LLP.xlsx`), e ingresa el presupuesto total de la campaña para optimizar la distribución manteniendo continuidad, optimalidad y heavy up.")
+        st.markdown("Sube tu **Plan de Medios en Excel** (`MediaPlan_LLP.xlsx`) y tu **Benchmark de Inversión** (`Benchmark_Budget_LLP.xlsx`), e ingresa el presupuesto total de la campaña y el número de semanas para optimizar la distribución manteniendo continuidad, optimalidad y heavy up.")
 
-        col_up1, col_up2, col_up3 = st.columns(3)
-        mp_file = col_up1.file_uploader("📂 Subir Plan de Medios (Excel)", type=["xlsx", "xls"], key="media_plan_excel")
-        bench_file = col_up2.file_uploader("📂 Subir Benchmark de Inversión (Excel)", type=["xlsx", "xls"], key="benchmark_excel")
-        campaign_budget_input = col_up3.number_input("💰 Presupuesto Total Campaña ($)", min_value=100000, max_value=100000000, value=15000000, step=100000, key="camp_budget_num")
+        col_up1, col_up2, col_up3, col_up4 = st.columns(4)
+        mp_file = col_up1.file_uploader("📂 Subir Plan de Medios", type=["xlsx", "xls"], key="media_plan_excel")
+        bench_file = col_up2.file_uploader("📂 Subir Benchmark", type=["xlsx", "xls"], key="benchmark_excel")
+        campaign_budget_input = col_up3.number_input("💰 Presupuesto Campaña ($)", min_value=100000, max_value=100000000, value=15000000, step=100000, key="camp_budget_num")
+        campaign_weeks_input = col_up4.number_input("📅 Semanas Campaña", min_value=1, max_value=104, value=21, step=1, key="camp_weeks_num")
 
         if mp_file is not None and bench_file is not None:
             try:
@@ -642,7 +668,147 @@ with tab3:
                 )
                 comp_col2.plotly_chart(fig_opt_area, use_container_width=True)
 
+                # --- SUBSECCIÓN: MEDIA CONTRIBUTION & VENTAS INCREMENTALES DEL PLAN OPTIMIZADO ---
+                st.markdown("---")
+                st.subheader("📦 Ventas Incrementales & Media Contribution")
+                
+                avg_sales = st.session_state.get('avg_weekly_sales', 0.0)
+                est_total_sales = avg_sales * campaign_weeks_input
+
+                if 'slope_conv' in locals() and est_total_sales > 0:
+                    pred_opt_sales = slope_conv * opt_contrib
+                    pred_orig_sales = slope_conv * orig_contrib
+                    sales_lift = pred_opt_sales - pred_orig_sales
+                    
+                    media_contrib_pct = (pred_opt_sales / est_total_sales) * 100
+                    orig_media_contrib_pct = (pred_orig_sales / est_total_sales) * 100
+
+                    sk1, sk2, sk3 = st.columns(3)
+                    sk1.metric("Ventas Incrementales (Plan Opt)", f"{pred_opt_sales:,.0f} uds", f"+{sales_lift:,.0f} uds")
+                    sk2.metric("Ventas Incrementales (Plan Orig)", f"{pred_orig_sales:,.0f} uds")
+                    sk3.metric("Media Contribution", f"{media_contrib_pct:.2f}%", f"Orig: {orig_media_contrib_pct:.2f}%")
+
+                # --- TERCERA SUBSECCIÓN: FA26 SELL THRU % (VELOCÍMETRO) ---
+                st.markdown("---")
+                st.subheader("🎯 FA26 Sell Thru % (Ventas Incrementales / Inventario Entregado)")
+                
+                col_st1, col_st2 = st.columns([1, 2])
+                with col_st1:
+                    inventario_entregado = st.number_input(
+                        "📦 Inventario Entregado (Unidades)", 
+                        min_value=1, 
+                        max_value=100000000, 
+                        value=2500000, 
+                        step=10000, 
+                        key="inventario_entregado_input"
+                    )
+                with col_st2:
+                    if 'pred_orig_sales' in locals() and inventario_entregado > 0:
+                        sell_thru_ratio = (pred_orig_sales / inventario_entregado) * 100
+                    else:
+                        sell_thru_ratio = 0.0
+
+                    fig_gauge = go.Figure(go.Indicator(
+                        mode = "gauge+number",
+                        value = sell_thru_ratio,
+                        number = {'suffix': "%", 'font': {'size': 26}},
+                        title = {'text': "<b>FA26 SELL THRU %</b>", 'font': {'size': 16}},
+                        gauge = {
+                            'axis': {'range': [None, 100], 'tickfont': {'size': 12}},
+                            'bar': {'color': "#0668E1"},
+                            'steps': [
+                                {'range': [0, 50], 'color': "#fee2e2"},
+                                {'range': [50, 80], 'color': "#fef08a"},
+                                {'range': [80, 100], 'color': "#d1fae5"}
+                            ]
+                        }
+                    ))
+                    fig_gauge.update_layout(height=280, margin=dict(l=30, r=30, t=60, b=10))
+                    st.plotly_chart(fig_gauge, use_container_width=True)
+
             except Exception as e:
                 st.error(f"Error procesando los archivos del plan de medios o benchmark: {e}")
         else:
-            st.info("👆 Por favor, sube ambos archivos Excel (`MediaPlan_LLP.xlsx` y `Benchmark_Budget_LLP.xlsx`) e ingresa el presupuesto de la campaña para ejecutar el optimizador avanzado.")
+            st.info("👆 Por favor, sube ambos archivos Excel (`MediaPlan_LLP.xlsx` y `Benchmark_Budget_LLP.xlsx`), ingresa el presupuesto y el número de semanas de la campaña para ejecutar el optimizador avanzado.")
+
+# ==========================================
+# PESTAÑA 4: GEOTARGETING & MAPA DE CALOR
+# ==========================================
+with tab4:
+    st.markdown("### 🗺️ Geotargeting & Mapa de Calor de Ventas")
+    st.markdown("Visualización geográfica de ubicaciones de Retailers y distribución de ventas mediante mapas interactivos y de calor.")
+
+    geo_file = st.file_uploader("📂 Subir archivo CSV de Geotargeting (ej. SampleGeotargetingMoose.csv)", type=["csv"], key="geo_file_uploader")
+    
+    df_geo = None
+    if geo_file is not None:
+        try:
+            df_geo = pd.read_csv(geo_file, encoding='latin1')
+            st.success(f"Archivo **{geo_file.name}** cargado exitosamente ({len(df_geo)} registros).")
+        except Exception as e:
+            st.error(f"Error al leer el archivo CSV: {e}")
+    else:
+        if os.path.exists("SampleGeotargetingMoose.csv"):
+            try:
+                df_geo = pd.read_csv("SampleGeotargetingMoose.csv", encoding='latin1')
+                st.info(f"📁 Cargado automáticamente el archivo local: `SampleGeotargetingMoose.csv` ({len(df_geo)} registros).")
+            except Exception as e:
+                st.warning(f"No se pudo cargar el archivo local: {e}")
+
+    if df_geo is not None and not df_geo.empty:
+        req_geo_cols = ['Retailer', 'Sucursal', 'Latitud', 'Longitud', 'Sales']
+        missing_geo = [c for c in req_geo_cols if c not in df_geo.columns]
+        
+        if missing_geo:
+            st.error(f"El archivo CSV no contiene las columnas requeridas: {missing_geo}")
+        else:
+            g_col1, g_col2 = st.columns([1, 3])
+            with g_col1:
+                st.subheader("Filtros")
+                all_retailers = df_geo['Retailer'].unique().tolist()
+                selected_retailers = st.multiselect("Filtrar por Retailer:", all_retailers, default=all_retailers)
+                
+                show_heatmap = st.checkbox("🔥 Mostrar Mapa de Calor", value=True)
+                show_markers = st.checkbox("📍 Mostrar Pines de Sucursales", value=True)
+
+            filtered_geo = df_geo[df_geo['Retailer'].isin(selected_retailers)]
+
+            with g_col2:
+                tot_stores = len(filtered_geo)
+                tot_sales_geo = filtered_geo['Sales'].sum()
+                avg_sales_geo = filtered_geo['Sales'].mean()
+
+                gm1, gm2, gm3 = st.columns(3)
+                gm1.metric("Total Sucursales", f"{tot_stores:,}")
+                gm2.metric("Ventas Totales", f"{tot_sales_geo:,.0f}")
+                gm3.metric("Ventas Promedio / Sucursal", f"{avg_sales_geo:,.1f}")
+
+                center_lat = filtered_geo['Latitud'].mean() if not filtered_geo.empty else 19.4326
+                center_lon = filtered_geo['Longitud'].mean() if not filtered_geo.empty else -99.1332
+
+                m_geo = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles='OpenStreetMap')
+
+                if show_heatmap and not filtered_geo.empty:
+                    heat_data = filtered_geo[['Latitud', 'Longitud', 'Sales']].values.tolist()
+                    HeatMap(heat_data, radius=20, blur=15, max_zoom=13).add_to(m_geo)
+
+                if show_markers and not filtered_geo.empty:
+                    for _, row in filtered_geo.iterrows():
+                        popup_text = f"<b>{row['Retailer']} - {row['Sucursal']}</b><br>Dirección: {row.get('Dirección', 'N/A')}<br>Ventas: {row['Sales']:,}"
+                        folium.CircleMarker(
+                            location=[row['Latitud'], row['Longitud']],
+                            radius=6,
+                            color='#0668E1',
+                            fill=True,
+                            fill_color='#F59E0B',
+                            fill_opacity=0.9,
+                            popup=folium.Popup(popup_text, max_width=300)
+                        ).add_to(m_geo)
+
+                st_folium(m_geo, width='100%', height=450)
+
+            st.markdown("---")
+            st.subheader("📋 Detalle de Ubicaciones y Ventas")
+            st.dataframe(filtered_geo[['Retailer', 'Sucursal', 'Dirección', 'Latitud', 'Longitud', 'Sales']].reset_index(drop=True), use_container_width=True)
+    else:
+        st.info("👆 Por favor, sube el archivo CSV de geotargeting (`SampleGeotargetingMoose.csv`) o asegúrate de que esté en la carpeta del proyecto para visualizar el mapa.")
