@@ -199,6 +199,8 @@ with tab1:
 
             df_model, weights, correlation_r, r2_val, grouped_contribs = fit_growth_index_model(raw_df, model_mode)
             
+            # Guardar en session_state para acceso global reactivo
+            st.session_state['df_model'] = df_model
             st.session_state['avg_weekly_sales'] = float(df_model["SalesUnides"].mean())
 
             col_inputs, col_results = st.columns([1.1, 2.5])
@@ -334,6 +336,7 @@ with tab1:
             lr_conv.fit(df_model[['Growth_Index']], df_model['SalesUnides'])
             slope_conv = lr_conv.coef_[0]
             intercept_conv = lr_conv.intercept_
+            st.session_state['slope_conv'] = slope_conv
 
             c_conv1, c_conv2 = st.columns([1, 2])
             with c_conv1:
@@ -595,7 +598,21 @@ with tab3:
                     original_spends_per_channel[c_name] = total_c_spend
 
                 orig_total_spend = sum(original_spends_per_channel.values())
-                orig_contrib = sum([float(interpolators[k]['contrib'](original_spends_per_channel.get(param['name'], 0))) for k, param in MEDIA_PARAMS.items()])
+                
+                # Cálculo de contribución original semana a semana según el plan de medios subido
+                orig_contrib = 0.0
+                for idx, row in df_mp_orig.iterrows():
+                    c_name = str(row[chan_col]).strip()
+                    matched_key = None
+                    for k, param in MEDIA_PARAMS.items():
+                        if param['name'].lower() == c_name.lower():
+                            matched_key = k
+                            break
+                    if matched_key:
+                        for w in date_cols:
+                            w_spend = float(row[w])
+                            orig_contrib += float(interpolators[matched_key]['contrib'](w_spend))
+
                 orig_revenue = orig_contrib * REVENUE_PER_GI
                 orig_roi = (orig_revenue / orig_total_spend) if orig_total_spend > 0 else 0
 
@@ -615,7 +632,17 @@ with tab3:
                         curr_opt_spends[best_k] += step
 
                 opt_total_spend_final = sum(curr_opt_spends.values())
-                opt_contrib = sum([float(interpolators[k]['contrib'](curr_opt_spends[k])) for k in MEDIA_PARAMS])
+                
+                # Calcular opt_contrib de forma precisa distribuyendo el presupuesto optimizado proporcionalmente en las semanas del plan
+                opt_contrib = 0.0
+                for key, param in MEDIA_PARAMS.items():
+                    ch_name = param['name']
+                    orig_channel_weekly = df_mp_orig[df_mp_orig[chan_col].str.strip().str.lower() == ch_name.lower()][date_cols].values.flatten()
+                    sum_orig_w = sum(orig_channel_weekly) if sum(orig_channel_weekly) > 0 else 1
+                    opt_weekly_channel = [curr_opt_spends[key] * (w / sum_orig_w) for w in orig_channel_weekly]
+                    for w_spend in opt_weekly_channel:
+                        opt_contrib += float(interpolators[key]['contrib'](w_spend))
+
                 opt_revenue = opt_contrib * REVENUE_PER_GI
                 opt_roi = (opt_revenue / opt_total_spend_final) if opt_total_spend_final > 0 else 0
 
@@ -675,7 +702,17 @@ with tab3:
                 avg_sales = st.session_state.get('avg_weekly_sales', 0.0)
                 est_total_sales = avg_sales * campaign_weeks_input
 
-                if 'slope_conv' in locals() and est_total_sales > 0:
+                # Obtener pendiente slope_conv de session_state o calcularla si es necesario
+                slope_conv = st.session_state.get('slope_conv', None)
+                if slope_conv is None:
+                    df_m_hist = st.session_state.get('df_model', None)
+                    if df_m_hist is not None and not df_m_hist.empty:
+                        lr_c = LinearRegression(fit_intercept=True)
+                        lr_c.fit(df_m_hist[['Growth_Index']], df_m_hist['SalesUnides'])
+                        slope_conv = lr_c.coef_[0]
+                        st.session_state['slope_conv'] = slope_conv
+
+                if slope_conv is not None and est_total_sales > 0:
                     pred_opt_sales = slope_conv * opt_contrib
                     pred_orig_sales = slope_conv * orig_contrib
                     sales_lift = pred_opt_sales - pred_orig_sales
@@ -687,6 +724,8 @@ with tab3:
                     sk1.metric("Ventas Incrementales (Plan Opt)", f"{pred_opt_sales:,.0f} uds", f"+{sales_lift:,.0f} uds")
                     sk2.metric("Ventas Incrementales (Plan Orig)", f"{pred_orig_sales:,.0f} uds")
                     sk3.metric("Media Contribution", f"{media_contrib_pct:.2f}%", f"Orig: {orig_media_contrib_pct:.2f}%")
+                else:
+                    st.info("💡 Calibra primero el modelo econométrico en la Pestaña 1 (Growth Index Builder) cargando tu CSV histórico para habilitar la estimación detallada en unidades.")
 
                 # --- TERCERA SUBSECCIÓN: FA26 SELL THRU % (VELOCÍMETRO) ---
                 st.markdown("---")
@@ -753,7 +792,7 @@ with tab4:
                 df_geo = pd.read_csv("SampleGeotargetingMoose.csv", encoding='latin1')
                 st.info(f"📁 Cargado automáticamente el archivo local: `SampleGeotargetingMoose.csv` ({len(df_geo)} registros).")
             except Exception as e:
-                st.warning(f"No se pudo cargar el archivo local: {e}")
+                st.warning(f"No se pudo cargar el archivo local: `SampleGeotargetingMoose.csv`: {e}")
 
     if df_geo is not None and not df_geo.empty:
         req_geo_cols = ['Retailer', 'Sucursal', 'Latitud', 'Longitud', 'Sales']
